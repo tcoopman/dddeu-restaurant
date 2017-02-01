@@ -195,7 +195,7 @@ defmodule Restaurant.PubSub do
     use GenServer
 
     def start_link() do
-        GenServer.start_link(__MODULE__, %{}, name: :pubsub)
+        GenServer.start_link(__MODULE__, %{topic_handlers: %{}, history: %{}}, name: :pubsub)
     end
 
     def subscribe(topic, handler) do
@@ -210,24 +210,42 @@ defmodule Restaurant.PubSub do
         Restaurant.Statistics.message_published_by_correlation_id(correlation_id, message)
     end
 
-    def handle_cast({:subscribe, topic, handler}, state = %{}) do
-        {_, new_state} = Map.get_and_update(state, topic, fn value ->
+    def get_history_for(topic) do
+        GenServer.call(:pubsub, {:get_history_for, topic})
+    end
+
+    def handle_cast({:subscribe, topic, handler}, state = %{topic_handlers: topic_handlers}) do
+        {_, new_topic_handlers} = Map.get_and_update(topic_handlers, topic, fn value ->
             case value do
                 nil -> {value, [handler]}
                 _ -> {value, [handler | value]}
             end
         end)
-        {:noreply, new_state}
+        {:noreply, %{state | topic_handlers: new_topic_handlers}}
     end
 
-    def handle_cast({:publish, topic, message}, state = %{}) do
-        state
+    def handle_cast({:publish, topic, message}, state = %{history: history}) do
+        handlers = state.topic_handlers
         |> Map.get(topic, [])
+
+        handlers
         |> Enum.each(fn handler -> 
             GenServer.call(handler, message) 
         end)
+
+        {_, new_history} = Map.get_and_update(history, topic, fn value ->
+            case value do
+                nil -> {value, [message]}
+                _ -> {value, [message | value]}
+            end
+        end)
         
-        {:noreply, state}
+        {:noreply, %{state | history: new_history}}
+    end
+
+    def handle_call({:get_history_for, topic}, _from, state = %{history: history}) do
+        reply = Map.get(history, topic, [])
+        {:reply, reply, state}
     end
 end
 
