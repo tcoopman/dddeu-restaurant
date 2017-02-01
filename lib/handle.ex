@@ -86,20 +86,23 @@ defmodule Restaurant.ProcessManagerHouse do
         process_manager = Enum.random(@process_managers)
         new_state = Map.put(state, correlation_id, process_manager)
 
-        {:ok, process_manager_pid} = process_manager.start_link(self(), Restaurant.DevNullPubSub)
-        history = Restaurant.PubSub.get_history_for(correlation_id)
-        Enum.each(history, fn old_message ->
-            GenServer.call(process_manager_pid, old_message)
-        end)
-
-        process_manager.set_pub_sub(process_manager_pid, Restaurant.PubSub)
-        GenServer.call(process_manager_pid, message)
+        start_process_manager(process_manager, correlation_id, message)
 
         {:reply, nil, new_state}
     end
     def handle_call(message = %{context: %Context{correlation_id: correlation_id}}, _from, state = %{}) do
         process_manager = Map.fetch!(state, correlation_id)
 
+        start_process_manager(process_manager, correlation_id, message)
+
+        {:reply, nil, state}
+    end
+    def handle_call({:remove_correlation_id, correlation_id}, _from, state = %{}) do
+        new_state = Map.delete(state, correlation_id)
+        {:reply, nil, new_state}
+    end
+
+    def start_process_manager(process_manager, correlation_id, message) do
         {:ok, process_manager_pid} = process_manager.start_link(self(), Restaurant.DevNullPubSub)
         history = Restaurant.PubSub.get_history_for(correlation_id)
         Enum.each(history, fn old_message ->
@@ -109,11 +112,7 @@ defmodule Restaurant.ProcessManagerHouse do
         process_manager.set_pub_sub(process_manager_pid, Restaurant.PubSub)
         GenServer.call(process_manager_pid, message)
 
-        {:reply, nil, state}
-    end
-    def handle_call({:remove_correlation_id, correlation_id}, _from, state = %{}) do
-        new_state = Map.delete(state, correlation_id)
-        {:reply, nil, new_state}
+        GenServer.stop(process_manager_pid)
     end
 end
 
