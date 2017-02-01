@@ -84,16 +84,29 @@ defmodule Restaurant.ProcessManagerHouse do
 
         # TODO external random
         process_manager = Enum.random(@process_managers)
+        new_state = Map.put(state, correlation_id, process_manager)
 
-        {:ok, process_manager_pid} = process_manager.start_link(self())
+        {:ok, process_manager_pid} = process_manager.start_link(self(), Restaurant.DevNullPubSub)
+        history = Restaurant.PubSub.get_history_for(correlation_id)
+        Enum.each(history, fn old_message ->
+            GenServer.call(process_manager_pid, old_message)
+        end)
+
+        process_manager.set_pub_sub(process_manager_pid, Restaurant.PubSub)
         GenServer.call(process_manager_pid, message)
-        new_state = Map.put(state, correlation_id, process_manager_pid)
 
         {:reply, nil, new_state}
     end
     def handle_call(message = %{context: %Context{correlation_id: correlation_id}}, _from, state = %{}) do
-        process_manager_pid = Map.fetch!(state, correlation_id)
+        process_manager = Map.fetch!(state, correlation_id)
 
+        {:ok, process_manager_pid} = process_manager.start_link(self(), Restaurant.DevNullPubSub)
+        history = Restaurant.PubSub.get_history_for(correlation_id)
+        Enum.each(history, fn old_message ->
+            GenServer.call(process_manager_pid, old_message)
+        end)
+
+        process_manager.set_pub_sub(process_manager_pid, Restaurant.PubSub)
         GenServer.call(process_manager_pid, message)
 
         {:reply, nil, state}
@@ -107,44 +120,52 @@ end
 defmodule Restaurant.ProcessManager.Normal do
     use GenServer
 
-    def start_link(house) do
-        GenServer.start_link(__MODULE__, %{house: house, status: nil})
+    def start_link(house, pubsub) do
+        GenServer.start_link(__MODULE__, %{house: house, status: nil, pubsub: pubsub})
+    end
+
+    def set_pub_sub(pid, pubsub) do
+        GenServer.call(pid, {:set_pub_sub, pubsub})
+    end
+
+    def handle_call({:set_pub_sub, pubsub}, _from, state) do
+        {:reply, nil, %{state | pubsub: pubsub}}
     end
 
     def handle_call(msg = %OrderPlaced{}, _from, state) do
         cook_order = %CookOrder{context: msg.context, message: msg.message}
-        Restaurant.PubSub.publish(cook_order)
+        state.pubsub.publish(cook_order)
         timed_out = %FoodCookedTimedOut{message: cook_order, context: msg.context, retry: 1}
-        Restaurant.PubSub.publish(%PublishIn{message: timed_out, context: msg.context, timeout: 1_000})
+        state.pubsub.publish(%PublishIn{message: timed_out, context: msg.context, timeout: 1_000})
         {:reply, nil, state}
     end
     def handle_call(msg = %OrderCooked{}, _from, state) do
         if state.status == :done do
-            Restaurant.PubSub.publish(%DuplicateMessage{context: msg.context, message: msg.message})
+            state.pubsub.publish(%DuplicateMessage{context: msg.context, message: msg.message})
             {:reply, nil, state}
         else
-            Restaurant.PubSub.publish(%PriceOrder{context: msg.context, message: msg.message})
+            state.pubsub.publish(%PriceOrder{context: msg.context, message: msg.message})
             {:reply, nil, %{state | status: :done}}
         end
     end
     def handle_call(msg = %OrderPriced{}, _from, state) do
-        Restaurant.PubSub.publish(%TakePayment{context: msg.context, message: msg.message})
+        state.pubsub.publish(%TakePayment{context: msg.context, message: msg.message})
         {:reply, nil, state}
     end
     def handle_call(msg = %FoodCookedTimedOut{retry: retry}, _from, state = %{status: status}) do
         cond do
             retry > 5 ->
                 gave_up = %GaveUp{message: msg.message, context: msg.context}
-                Restaurant.PubSub.publish(gave_up)
+                state.pubsub.publish(gave_up)
             true ->
                 case status do
                     :done ->
                         :noop
                     _ ->
                         cook_order = msg.message
-                        Restaurant.PubSub.publish(cook_order)
+                        state.pubsub.publish(cook_order)
                         timed_out = %FoodCookedTimedOut{message: cook_order, context: msg.context, retry: msg.retry + 1}
-                        Restaurant.PubSub.publish(%PublishIn{message: timed_out, context: msg.context, timeout: 1_000})
+                        state.pubsub.publish(%PublishIn{message: timed_out, context: msg.context, timeout: 1_000})
                 end
         end
 
@@ -155,23 +176,31 @@ end
 defmodule Restaurant.ProcessManager.PayFirst do
     use GenServer
 
-    def start_link(house) do
-        GenServer.start_link(__MODULE__, house)
+    def start_link(house, pubsub) do
+        GenServer.start_link(__MODULE__, %{house: house, pubsub: pubsub})
+    end
+
+    def set_pub_sub(pid, pubsub) do
+        GenServer.call(pid, {:set_pub_sub, pubsub})
+    end
+
+    def handle_call({:set_pub_sub, pubsub}, _from, state) do
+        {:reply, nil, %{state | pubsub: pubsub}}
     end
 
     def handle_call(msg = %OrderPlaced{}, _from, state) do
-        Restaurant.PubSub.publish(%PriceOrder{context: msg.context, message: msg.message})
+        state.pubsub.publish(%PriceOrder{context: msg.context, message: msg.message})
         {:reply, nil, state}
     end
     def handle_call(msg = %OrderPriced{}, _from, state) do
-        Restaurant.PubSub.publish(%TakePayment{context: msg.context, message: msg.message})
+        state.pubsub.publish(%TakePayment{context: msg.context, message: msg.message})
         {:reply, nil, state}
     end
     def handle_call(msg = %OrderPayed{context: %Context{}}, _from, state) do
         cook_order = %CookOrder{context: msg.context, message: msg.message}
-        Restaurant.PubSub.publish(cook_order)
+        state.pubsub.publish(cook_order)
         timed_out = %FoodCookedTimedOut{message: cook_order, context: msg.context, retry: 1}
-        Restaurant.PubSub.publish(%PublishIn{message: timed_out, context: msg.context, timeout: 1_000})
+        state.pubsub.publish(%PublishIn{message: timed_out, context: msg.context, timeout: 1_000})
         {:reply, nil, state}
     end
     def handle_call(msg = %FoodCookedTimedOut{}, _from, state = %{status: status}) do
@@ -181,14 +210,20 @@ defmodule Restaurant.ProcessManager.PayFirst do
                 {:reply, nil, state}
             _ ->
                 cook_order = msg.message
-                Restaurant.PubSub.publish(cook_order)
+                state.pubsub.publish(cook_order)
                 timed_out = %FoodCookedTimedOut{message: cook_order, context: msg.context, retry: msg.retry + 1}
-                Restaurant.PubSub.publish(%PublishIn{message: timed_out, context: msg.context, timeout: 1_000})
+                state.pubsub.publish(%PublishIn{message: timed_out, context: msg.context, timeout: 1_000})
 
                 {:reply, nil, state}
         end
     end
     def handle_call(_, _from, state), do: {:reply, nil, state}
+end
+
+defmodule Restaurant.DevNullPubSub do
+    def publish(_) do
+        # IO.puts "DevNull"
+    end
 end
 
 defmodule Restaurant.PubSub do
@@ -230,7 +265,9 @@ defmodule Restaurant.PubSub do
 
         handlers
         |> Enum.each(fn handler -> 
-            GenServer.call(handler, message) 
+            spawn(fn ->
+                GenServer.call(handler, message) 
+            end)
         end)
 
         {_, new_history} = Map.get_and_update(history, topic, fn value ->
