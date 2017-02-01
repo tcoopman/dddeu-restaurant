@@ -1,5 +1,5 @@
-alias Restaurant.{OrderPlaced, OrderCooked, OrderPriced, OrderPayed, FoodCookedTimedOut}
-alias Restaurant.{CookOrder, PriceOrder, TakePayment, PublishIn}
+alias Restaurant.{OrderPlaced, OrderCooked, OrderPriced, OrderPayed, FoodCookedTimedOut, GaveUp}
+alias Restaurant.{CookOrder, PriceOrder, TakePayment, PublishIn, DuplicateMessage}
 alias Restaurant.Order
 alias Restaurant.Message.Context
 
@@ -37,13 +37,13 @@ defmodule Restaurant.Statistics do
         GenServer.cast(:stats, {:message_published, topic, msg}) 
     end
 
-    def message_published_by_correlation_id(correlation_id, msg = %{}) do
+    def message_published_by_correlation_id(_correlation_id, _msg = %{}) do
         # TODO
         # GenServer.cast(:stats, {:message_published_by_correlation_id, topic, msg}) 
     end
 
-    def handle_cast({:message_published, topic, msg = %{}}, state = %{}) do
-        {val, by_topic} = Map.get_and_update(state.by_topic, topic, fn item ->
+    def handle_cast({:message_published, topic, %{}}, state = %{}) do
+        {_val, by_topic} = Map.get_and_update(state.by_topic, topic, fn item ->
             case item do
                 nil -> {item, %{nb: 1}}
                 _ -> {item, %{item | nb: item.nb + 1}}
@@ -119,26 +119,36 @@ defmodule Restaurant.ProcessManager.Normal do
         {:reply, nil, state}
     end
     def handle_call(msg = %OrderCooked{}, _from, state) do
-        Restaurant.PubSub.publish(%PriceOrder{context: msg.context, message: msg.message})
-        {:reply, nil, %{state | status: :done}}
+        if state.status == :done do
+            Restaurant.PubSub.publish(%DuplicateMessage{context: msg.context, message: msg.message})
+            {:reply, nil, state}
+        else
+            Restaurant.PubSub.publish(%PriceOrder{context: msg.context, message: msg.message})
+            {:reply, nil, %{state | status: :done}}
+        end
     end
     def handle_call(msg = %OrderPriced{}, _from, state) do
         Restaurant.PubSub.publish(%TakePayment{context: msg.context, message: msg.message})
         {:reply, nil, state}
     end
-    def handle_call(msg = %FoodCookedTimedOut{}, _from, state = %{status: status}) do
-        IO.puts "Received foodcookedtimeout"
-        case status do
-            :done ->
-                {:reply, nil, state}
-            _ ->
-                cook_order = msg.message
-                Restaurant.PubSub.publish(cook_order)
-                timed_out = %FoodCookedTimedOut{message: cook_order, context: msg.context, retry: msg.retry + 1}
-                Restaurant.PubSub.publish(%PublishIn{message: timed_out, context: msg.context, timeout: 1_000})
-
-                {:reply, nil, state}
+    def handle_call(msg = %FoodCookedTimedOut{retry: retry}, _from, state = %{status: status}) do
+        cond do
+            retry > 5 ->
+                gave_up = %GaveUp{message: msg.message, context: msg.context}
+                Restaurant.PubSub.publish(gave_up)
+            true ->
+                case status do
+                    :done ->
+                        :noop
+                    _ ->
+                        cook_order = msg.message
+                        Restaurant.PubSub.publish(cook_order)
+                        timed_out = %FoodCookedTimedOut{message: cook_order, context: msg.context, retry: msg.retry + 1}
+                        Restaurant.PubSub.publish(%PublishIn{message: timed_out, context: msg.context, timeout: 1_000})
+                end
         end
+
+        {:reply, nil, state}
     end
     def handle_call(_, _from, state), do: {:reply, nil, state}
 end
@@ -262,6 +272,7 @@ defmodule Restaurant.Threaded do
             end)
             case queue_out do
                 {{:value, message}, new_queue} -> 
+                    IO.puts "passing on"
                     GenServer.call(handler, message)
                     Agent.update(message_queue, fn %{message_count: message_count} ->
                         %{messages: new_queue, message_count: message_count - 1}
@@ -290,6 +301,7 @@ defmodule Restaurant.TimeToLive do
 
         case NaiveDateTime.compare(now, NaiveDateTime.add(created_on, ttl, :millisecond)) do
             :lt ->
+                IO.puts "going on with it"
                 GenServer.call(handler, message, 10_000)
             _ ->
                 IO.puts "dropping message"
@@ -305,7 +317,7 @@ defmodule Restaurant.FuckUpMyMessages do
         GenServer.start_link(__MODULE__, %{handler: handler})
     end
 
-    def handle_call(message = %{context: %Context{created_on: created_on}}, _from, state = %{handler: handler}) do
+    def handle_call(message = %{}, _from, state = %{handler: handler}) do
         should_i_fuck_up = :rand.normal
         cond do
             should_i_fuck_up > 0.8 -> 
@@ -318,6 +330,8 @@ defmodule Restaurant.FuckUpMyMessages do
                 IO.puts "Dropping"
                 :noop
             true -> 
+                IO.puts "normal cooking"
+                IO.puts message.__struct__
                 GenServer.call(handler, message, 10_000)
         end 
         {:reply, nil, state}
@@ -348,6 +362,7 @@ defmodule Restaurant.FairRoundRobin do
         end)
 
         new_state = if maybe_handler == nil do
+            # IO.puts "No empty handlers"
             state
         else
             case messages do
@@ -417,6 +432,7 @@ defmodule Restaurant.Cook do
     end
 
     def handle_call(%CookOrder{context: %Context{} = context, message: %Order{} = order}, _from, state = %{}) do
+        IO.puts "I'm going to cook #{state.cook_name}"
         new_order = cook(order)
         new_message = %OrderCooked{context: Context.update(context), message: new_order}
         Restaurant.PubSub.publish(new_message)

@@ -76,3 +76,13 @@ defmodule Restaurant.FoodCookedTimedOut do
     @enforce_keys [:message, :context, :retry]
     defstruct [:message, :context, :retry]
 end
+
+defmodule Restaurant.GaveUp do
+    @enforce_keys [:message, :context]
+    defstruct [:message, :context]
+end
+
+defmodule Restaurant.DuplicateMessage do
+    @enforce_keys [:message, :context]
+    defstruct [:message, :context]
+end
