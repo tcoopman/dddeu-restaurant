@@ -1,8 +1,39 @@
-defmodule Restaurant.Order do
-    @enforce_keys [:order_id, :table_number, :created_on]
-    defstruct [:order_id, :table_number, :subTotal, :taxes, :total, :ingredients, :items, :is_paid, :created_on]
+defmodule Restaurant.Message do
+    alias Restaurant.Message
+
+    @enforce_keys [:id, :correlation_id, :causation_id, :created_on]
+    defstruct [
+        :id,
+        :correlation_id,
+        :causation_id,
+        :table_number,
+        :subTotal,
+        :taxes,
+        :total,
+        :ingredients,
+        :items,
+        :is_paid,
+        :created_on
+    ]
+
+    def new do
+        %Message{
+            id: UUID.uuid4(),
+            correlation_id: UUID.uuid4(),
+            causation_id: :none,
+            created_on: NaiveDateTime.utc_now()
+        }
+    end
+    
+    def update(previous = %Message{id: previous_id, correlation_id: correlation_id}) do
+        %{ previous |
+            id: UUID.uuid4(),
+            correlation_id: correlation_id,
+            causation_id: previous_id,
+        }
+    end
 end
 
-defmodule Restaurant.Order.Item do
+defmodule Restaurant.Message.Item do
     defstruct [:name, :quantity, :price]
 end

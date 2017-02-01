@@ -27,27 +27,31 @@ defmodule Restaurant do
 
     {:ok, _} = Restaurant.PubSub.start_link()
     Restaurant.PubSub.subscribe(:ordered, waiter)
-    Restaurant.PubSub.subscribe(:order_placed, kitchen)
-    Restaurant.PubSub.subscribe(:order_cooked, assistant)
-    Restaurant.PubSub.subscribe(:order_calculated, cashier)
+    Restaurant.PubSub.subscribe(:cook_order, kitchen)
+    Restaurant.PubSub.subscribe(:price_order, assistant)
+    Restaurant.PubSub.subscribe(:take_payment, cashier)
     Restaurant.PubSub.subscribe(:order_payed, printer)
 
     Restaurant.Threaded.start(cook_tom_threaded)
     Restaurant.Threaded.start(cook_hank_threaded)
     Restaurant.Threaded.start(cook_suzy_threaded)
+    
+    waiter
   end
 
   def main do
     :observer.start()
 
-    create()
+    waiter = create()
+    IO.puts "who is the waiter"
+    IO.inspect waiter
 
     Enum.each(1..100, fn table_number ->
       IO.puts "ordering #{table_number}"
-      Restaurant.PubSub.publish(:ordered, table_number)
+      Restaurant.Waiter.order(waiter, table_number)
       Process.sleep(50)
     end)
 
-    IO.gets "Press any key to exit\n"
+    IO.gets ""
   end
 end
