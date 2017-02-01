@@ -1,7 +1,70 @@
-alias Restaurant.{OrderPlaced, OrderCooked, OrderPriced, OrderPayed}
-alias Restaurant.{CookOrder, PriceOrder, TakePayment}
+alias Restaurant.{OrderPlaced, OrderCooked, OrderPriced, OrderPayed, FoodCookedTimedOut}
+alias Restaurant.{CookOrder, PriceOrder, TakePayment, PublishIn}
 alias Restaurant.Order
 alias Restaurant.Message.Context
+
+defmodule Restaurant.AlarmClock do
+    use GenServer
+
+    def start_link() do
+        GenServer.start_link(__MODULE__, nil, name: :alarm)
+    end
+
+    def handle_call(%PublishIn{timeout: timeout, message: message}, _from, state) do
+        Process.send_after(self(), {:publish, message}, timeout)
+        {:reply, nil, state}
+    end
+
+    def handle_info({:publish, message}, state) do
+        Restaurant.PubSub.publish(message)
+        {:noreply, state}
+    end
+end
+
+defmodule Restaurant.Statistics do
+    use GenServer
+
+    def start_link() do
+        GenServer.start_link(__MODULE__, nil, name: :stats)
+    end
+
+    def init(_) do
+        schedule_work()
+        {:ok, %{by_topic: %{}, by_correlation_id: %{}}}
+    end
+
+    def message_published(topic, msg = %{}) do
+        GenServer.cast(:stats, {:message_published, topic, msg}) 
+    end
+
+    def message_published_by_correlation_id(correlation_id, msg = %{}) do
+        # TODO
+        # GenServer.cast(:stats, {:message_published_by_correlation_id, topic, msg}) 
+    end
+
+    def handle_cast({:message_published, topic, msg = %{}}, state = %{}) do
+        {val, by_topic} = Map.get_and_update(state.by_topic, topic, fn item ->
+            case item do
+                nil -> {item, %{nb: 1}}
+                _ -> {item, %{item | nb: item.nb + 1}}
+            end
+        end)
+
+        {:noreply, %{state | by_topic: by_topic}}
+    end
+
+    def handle_info(:print, state) do
+        IO.puts "STATS BY TOPIC:"
+        Map.to_list(state.by_topic)
+        |> Enum.each(fn {topic, stats} -> IO.puts "#{topic}: #{stats.nb}" end)
+        schedule_work()
+        {:noreply, state}
+    end
+
+    defp schedule_work() do
+        Process.send_after(self(), :print, 5_000)
+    end
+end
 
 defmodule Restaurant.ProcessManagerHouse do
     use GenServer
@@ -45,21 +108,37 @@ defmodule Restaurant.ProcessManager.Normal do
     use GenServer
 
     def start_link(house) do
-        GenServer.start_link(__MODULE__, house)
+        GenServer.start_link(__MODULE__, %{house: house, status: nil})
     end
 
     def handle_call(msg = %OrderPlaced{}, _from, state) do
-        IO.puts "NORMALLL"
-        Restaurant.PubSub.publish(CookOrder, %CookOrder{context: msg.context, message: msg.message})
+        cook_order = %CookOrder{context: msg.context, message: msg.message}
+        Restaurant.PubSub.publish(cook_order)
+        timed_out = %FoodCookedTimedOut{message: cook_order, context: msg.context, retry: 1}
+        Restaurant.PubSub.publish(%PublishIn{message: timed_out, context: msg.context, timeout: 1_000})
         {:reply, nil, state}
     end
     def handle_call(msg = %OrderCooked{}, _from, state) do
-        Restaurant.PubSub.publish(PriceOrder, %PriceOrder{context: msg.context, message: msg.message})
-        {:reply, nil, state}
+        Restaurant.PubSub.publish(%PriceOrder{context: msg.context, message: msg.message})
+        {:reply, nil, %{state | status: :done}}
     end
     def handle_call(msg = %OrderPriced{}, _from, state) do
-        Restaurant.PubSub.publish(TakePayment, %TakePayment{context: msg.context, message: msg.message})
+        Restaurant.PubSub.publish(%TakePayment{context: msg.context, message: msg.message})
         {:reply, nil, state}
+    end
+    def handle_call(msg = %FoodCookedTimedOut{}, _from, state = %{status: status}) do
+        IO.puts "Received foodcookedtimeout"
+        case status do
+            :done ->
+                {:reply, nil, state}
+            _ ->
+                cook_order = msg.message
+                Restaurant.PubSub.publish(cook_order)
+                timed_out = %FoodCookedTimedOut{message: cook_order, context: msg.context, retry: msg.retry + 1}
+                Restaurant.PubSub.publish(%PublishIn{message: timed_out, context: msg.context, timeout: 1_000})
+
+                {:reply, nil, state}
+        end
     end
     def handle_call(_, _from, state), do: {:reply, nil, state}
 end
@@ -71,17 +150,33 @@ defmodule Restaurant.ProcessManager.PayFirst do
     end
 
     def handle_call(msg = %OrderPlaced{}, _from, state) do
-        IO.puts "DODDGGGGGGGYYYYYYYYYYYYYYYYY"
-        Restaurant.PubSub.publish(PriceOrder, %PriceOrder{context: msg.context, message: msg.message})
+        Restaurant.PubSub.publish(%PriceOrder{context: msg.context, message: msg.message})
         {:reply, nil, state}
     end
     def handle_call(msg = %OrderPriced{}, _from, state) do
-        Restaurant.PubSub.publish(TakePayment, %TakePayment{context: msg.context, message: msg.message})
+        Restaurant.PubSub.publish(%TakePayment{context: msg.context, message: msg.message})
         {:reply, nil, state}
     end
     def handle_call(msg = %OrderPayed{context: %Context{}}, _from, state) do
-        Restaurant.PubSub.publish(CookOrder, %CookOrder{context: msg.context, message: msg.message})
+        cook_order = %CookOrder{context: msg.context, message: msg.message}
+        Restaurant.PubSub.publish(cook_order)
+        timed_out = %FoodCookedTimedOut{message: cook_order, context: msg.context, retry: 1}
+        Restaurant.PubSub.publish(%PublishIn{message: timed_out, context: msg.context, timeout: 1_000})
         {:reply, nil, state}
+    end
+    def handle_call(msg = %FoodCookedTimedOut{}, _from, state = %{status: status}) do
+        IO.puts "Received foodcookedtimeout"
+        case status do
+            :done ->
+                {:reply, nil, state}
+            _ ->
+                cook_order = msg.message
+                Restaurant.PubSub.publish(cook_order)
+                timed_out = %FoodCookedTimedOut{message: cook_order, context: msg.context, retry: msg.retry + 1}
+                Restaurant.PubSub.publish(%PublishIn{message: timed_out, context: msg.context, timeout: 1_000})
+
+                {:reply, nil, state}
+        end
     end
     def handle_call(_, _from, state), do: {:reply, nil, state}
 end
@@ -97,9 +192,12 @@ defmodule Restaurant.PubSub do
         GenServer.cast(:pubsub, {:subscribe, topic, handler})
     end
 
-    def publish(topic, message = %{context: %Context{correlation_id: correlation_id}}) do
+    def publish(message = %{context: %Context{correlation_id: correlation_id}}) do
+        topic = message.__struct__
         GenServer.cast(:pubsub, {:publish, topic, message})
         GenServer.cast(:pubsub, {:publish, correlation_id, message})
+        Restaurant.Statistics.message_published(topic, message)
+        Restaurant.Statistics.message_published_by_correlation_id(correlation_id, message)
     end
 
     def handle_cast({:subscribe, topic, handler}, state = %{}) do
@@ -175,7 +273,7 @@ defmodule Restaurant.Threaded do
         {:noreply, state}
     end
 
-    def schedule_work(pid) do
+    defp schedule_work(pid) do
         Process.send_after(pid, :start, 1000)
     end
 end
@@ -196,6 +294,32 @@ defmodule Restaurant.TimeToLive do
             _ ->
                 IO.puts "dropping message"
         end
+        {:reply, nil, state}
+    end
+end
+
+defmodule Restaurant.FuckUpMyMessages do
+    use GenServer
+
+    def start_link(handler) do
+        GenServer.start_link(__MODULE__, %{handler: handler})
+    end
+
+    def handle_call(message = %{context: %Context{created_on: created_on}}, _from, state = %{handler: handler}) do
+        should_i_fuck_up = :rand.normal
+        cond do
+            should_i_fuck_up > 0.8 -> 
+                # duplicate
+                IO.puts "Duplication"
+                GenServer.call(handler, message, 10_000)
+                GenServer.call(handler, message, 10_000)
+            should_i_fuck_up > 0.6 -> 
+                # delete
+                IO.puts "Dropping"
+                :noop
+            true -> 
+                GenServer.call(handler, message, 10_000)
+        end 
         {:reply, nil, state}
     end
 end
@@ -274,7 +398,7 @@ defmodule Restaurant.Waiter do
 
     def handle_call(table_number, _from, state) do
         new_order = place_order(table_number)
-        Restaurant.PubSub.publish(OrderPlaced, new_order)
+        Restaurant.PubSub.publish(new_order)
         {:reply, nil, state}
     end
 
@@ -295,7 +419,7 @@ defmodule Restaurant.Cook do
     def handle_call(%CookOrder{context: %Context{} = context, message: %Order{} = order}, _from, state = %{}) do
         new_order = cook(order)
         new_message = %OrderCooked{context: Context.update(context), message: new_order}
-        Restaurant.PubSub.publish(OrderCooked, new_message)
+        Restaurant.PubSub.publish(new_message)
         {:reply, nil, state}
     end
 
@@ -315,7 +439,7 @@ defmodule Restaurant.Assistant do
     def handle_call(%PriceOrder{context: context, message: order}, _from, state) do
         new_order = priceMessage(order)
         new_message = %OrderPriced{context: Context.update(context), message: new_order}
-        Restaurant.PubSub.publish(OrderPriced, new_message)
+        Restaurant.PubSub.publish(new_message)
         {:reply, nil, state}
     end
 
@@ -339,7 +463,7 @@ defmodule Restaurant.Cashier do
     def handle_call(%TakePayment{context: context, message: order}, _from, state) do
         new_order = priceMessage(order)
         new_message = %OrderPayed{context: Context.update(context), message: new_order}
-        Restaurant.PubSub.publish(OrderPayed, new_message)
+        Restaurant.PubSub.publish(new_message)
         {:reply, nil, state}
     end
 

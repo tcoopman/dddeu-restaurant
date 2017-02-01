@@ -65,3 +65,14 @@ defmodule Restaurant.TakePayment do
     @enforce_keys [:message, :context]
     defstruct [:message, :context]
 end
+
+# Other
+defmodule Restaurant.PublishIn do
+    @enforce_keys [:message, :context, :timeout]
+    defstruct [:message, :context, :timeout]
+end
+
+defmodule Restaurant.FoodCookedTimedOut do
+    @enforce_keys [:message, :context, :retry]
+    defstruct [:message, :context, :retry]
+end
