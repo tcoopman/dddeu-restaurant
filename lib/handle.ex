@@ -6,46 +6,54 @@ alias Restaurant.Message.Context
 defmodule Restaurant.ProcessManagerHouse do
     use GenServer
 
+    @process_managers [Restaurant.ProcessManager.Normal, Restaurant.ProcessManager.PayFirst]
+
     def start_link() do
         GenServer.start_link(__MODULE__, %{})
     end
 
+    def remove_correlation_id(pid, correlation_id) do
+        GenServer.call(pid, {:remove_correlation_id, correlation_id})
+    end
+
     def handle_call(message = %OrderPlaced{context: %Context{correlation_id: correlation_id}}, _from, state = %{}) do
-        IO.inspect "The house received the OrderPlaced"
         Restaurant.PubSub.subscribe(correlation_id, self())
 
-        {:ok, process_manager_pid} = Restaurant.ProcessManager.start_link()
-        IO.inspect "Forwardingn to"
-        IO.inspect process_manager_pid
+        # TODO external random
+        process_manager = Enum.random(@process_managers)
+
+        {:ok, process_manager_pid} = process_manager.start_link(self())
         GenServer.call(process_manager_pid, message)
         new_state = Map.put(state, correlation_id, process_manager_pid)
 
         {:reply, nil, new_state}
     end
     def handle_call(message = %{context: %Context{correlation_id: correlation_id}}, _from, state = %{}) do
-        IO.inspect "The house is handling an other message"
         process_manager_pid = Map.fetch!(state, correlation_id)
 
         GenServer.call(process_manager_pid, message)
 
         {:reply, nil, state}
     end
+    def handle_call({:remove_correlation_id, correlation_id}, _from, state = %{}) do
+        new_state = Map.delete(state, correlation_id)
+        {:reply, nil, new_state}
+    end
 end
 
-defmodule Restaurant.ProcessManager do
+defmodule Restaurant.ProcessManager.Normal do
     use GenServer
 
-    def start_link() do
-        GenServer.start_link(__MODULE__, nil)
+    def start_link(house) do
+        GenServer.start_link(__MODULE__, house)
     end
 
     def handle_call(msg = %OrderPlaced{}, _from, state) do
-        IO.puts "Order placed in the ProcessManager"
+        IO.puts "NORMALLL"
         Restaurant.PubSub.publish(CookOrder, %CookOrder{context: msg.context, message: msg.message})
         {:reply, nil, state}
     end
     def handle_call(msg = %OrderCooked{}, _from, state) do
-        IO.puts "Order Cooked in the ProcessManager"
         Restaurant.PubSub.publish(PriceOrder, %PriceOrder{context: msg.context, message: msg.message})
         {:reply, nil, state}
     end
@@ -53,13 +61,29 @@ defmodule Restaurant.ProcessManager do
         Restaurant.PubSub.publish(TakePayment, %TakePayment{context: msg.context, message: msg.message})
         {:reply, nil, state}
     end
-    def handle_call(msg = %OrderPayed{}, _from, state) do
-        # TODO i'm done, remove me
-        IO.puts "The order is payed"
-        IO.inspect msg
+    def handle_call(_, _from, state), do: {:reply, nil, state}
+end
+defmodule Restaurant.ProcessManager.PayFirst do
+    use GenServer
+
+    def start_link(house) do
+        GenServer.start_link(__MODULE__, house)
+    end
+
+    def handle_call(msg = %OrderPlaced{}, _from, state) do
+        IO.puts "DODDGGGGGGGYYYYYYYYYYYYYYYYY"
+        Restaurant.PubSub.publish(PriceOrder, %PriceOrder{context: msg.context, message: msg.message})
         {:reply, nil, state}
     end
-    def handle_call(msg, _from, state), do: {:reply, nil, state}
+    def handle_call(msg = %OrderPriced{}, _from, state) do
+        Restaurant.PubSub.publish(TakePayment, %TakePayment{context: msg.context, message: msg.message})
+        {:reply, nil, state}
+    end
+    def handle_call(msg = %OrderPayed{context: %Context{}}, _from, state) do
+        Restaurant.PubSub.publish(CookOrder, %CookOrder{context: msg.context, message: msg.message})
+        {:reply, nil, state}
+    end
+    def handle_call(_, _from, state), do: {:reply, nil, state}
 end
 
 defmodule Restaurant.PubSub do
@@ -70,14 +94,11 @@ defmodule Restaurant.PubSub do
     end
 
     def subscribe(topic, handler) do
-        IO.puts "Subscribing #{topic}"
         GenServer.cast(:pubsub, {:subscribe, topic, handler})
     end
 
     def publish(topic, message = %{context: %Context{correlation_id: correlation_id}}) do
-        IO.puts "Publishing #{topic}"
         GenServer.cast(:pubsub, {:publish, topic, message})
-        IO.puts "Publishing #{correlation_id}"
         GenServer.cast(:pubsub, {:publish, correlation_id, message})
     end
 
@@ -95,9 +116,6 @@ defmodule Restaurant.PubSub do
         state
         |> Map.get(topic, [])
         |> Enum.each(fn handler -> 
-            IO.puts "calling after :publish"
-            IO.inspect handler
-            IO.inspect message
             GenServer.call(handler, message) 
         end)
         
@@ -255,7 +273,6 @@ defmodule Restaurant.Waiter do
     end
 
     def handle_call(table_number, _from, state) do
-        IO.puts "Waiter is working"
         new_order = place_order(table_number)
         Restaurant.PubSub.publish(OrderPlaced, new_order)
         {:reply, nil, state}
@@ -275,8 +292,7 @@ defmodule Restaurant.Cook do
         GenServer.start_link(__MODULE__, state)
     end
 
-    def handle_call(message = %CookOrder{context: %Context{} = context, message: %Order{} = order}, _from, state = %{cook_name: cook_name}) do
-        IO.puts "#{cook_name} is cooking"
+    def handle_call(%CookOrder{context: %Context{} = context, message: %Order{} = order}, _from, state = %{}) do
         new_order = cook(order)
         new_message = %OrderCooked{context: Context.update(context), message: new_order}
         Restaurant.PubSub.publish(OrderCooked, new_message)
@@ -296,8 +312,7 @@ defmodule Restaurant.Assistant do
         GenServer.start_link(__MODULE__, nil)
     end
 
-    def handle_call(message = %PriceOrder{context: context, message: order}, _from, state) do
-        IO.puts "Assistant is working"
+    def handle_call(%PriceOrder{context: context, message: order}, _from, state) do
         new_order = priceMessage(order)
         new_message = %OrderPriced{context: Context.update(context), message: new_order}
         Restaurant.PubSub.publish(OrderPriced, new_message)
@@ -321,8 +336,7 @@ defmodule Restaurant.Cashier do
         GenServer.start_link(__MODULE__, nil)
     end
 
-    def handle_call(message = %TakePayment{context: context, message: order}, _from, state) do
-        IO.puts "Cashier is working"
+    def handle_call(%TakePayment{context: context, message: order}, _from, state) do
         new_order = priceMessage(order)
         new_message = %OrderPayed{context: Context.update(context), message: new_order}
         Restaurant.PubSub.publish(OrderPayed, new_message)
