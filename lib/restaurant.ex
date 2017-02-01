@@ -3,11 +3,9 @@ defmodule Restaurant do
   Documentation for Restaurant.
   """
 
-  alias Restaurant.{CookOrder, PriceOrder, TakePayment}
+  alias Restaurant.{OrderPlaced, CookOrder, PriceOrder, TakePayment}
 
   def create do
-    {:ok, printer} = Restaurant.Printer.start_link()
-    
     {:ok, cashier} = Restaurant.Cashier.start_link()
 
     {:ok, assistant} = Restaurant.Assistant.start_link()
@@ -27,11 +25,14 @@ defmodule Restaurant do
     {:ok, kitchen} = Restaurant.FairRoundRobin.start_link([cook_tom_threaded, cook_hank_threaded, cook_suzy_threaded])
     {:ok, waiter} = Restaurant.Waiter.start_link()
 
+    {:ok, process_manager_house} = Restaurant.ProcessManagerHouse.start_link()
+
     {:ok, _} = Restaurant.PubSub.start_link()
+    Restaurant.PubSub.subscribe(OrderPlaced, process_manager_house)
+
     Restaurant.PubSub.subscribe(CookOrder, kitchen)
     Restaurant.PubSub.subscribe(PriceOrder, assistant)
     Restaurant.PubSub.subscribe(TakePayment, cashier)
-    Restaurant.PubSub.subscribe(OrderPayed, printer)
 
     Restaurant.Threaded.start(cook_tom_threaded)
     Restaurant.Threaded.start(cook_hank_threaded)

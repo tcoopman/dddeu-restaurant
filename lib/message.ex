@@ -1,11 +1,5 @@
-defmodule Restaurant.Message do
-    alias Restaurant.Message
-
-    @enforce_keys [:id, :correlation_id, :causation_id, :created_on]
+defmodule Restaurant.Order do
     defstruct [
-        :id,
-        :correlation_id,
-        :causation_id,
         :table_number,
         :subTotal,
         :taxes,
@@ -13,19 +7,25 @@ defmodule Restaurant.Message do
         :ingredients,
         :items,
         :is_paid,
-        :created_on
     ]
+end
+
+defmodule Restaurant.Message.Context do
+    alias Restaurant.Message.Context
+
+    @enforce_keys [:id, :correlation_id, :causation_id, :created_on]
+    defstruct [:id, :correlation_id, :causation_id, :created_on]
 
     def new do
-        %Message{
+        %Context{
             id: UUID.uuid4(),
             correlation_id: UUID.uuid4(),
             causation_id: :none,
             created_on: NaiveDateTime.utc_now()
         }
     end
-    
-    def update(previous = %Message{id: previous_id, correlation_id: correlation_id}) do
+
+    def update(previous = %Context{id: previous_id, correlation_id: correlation_id}) do
         %{ previous |
             id: UUID.uuid4(),
             correlation_id: correlation_id,
@@ -34,17 +34,34 @@ defmodule Restaurant.Message do
     end
 end
 
-defmodule Restaurant.Message.Item do
-    defstruct [:name, :quantity, :price]
+# Events
+defmodule Restaurant.OrderPlaced do 
+    @enforce_keys [:message, :context]
+    defstruct [:message, :context]
+end
+defmodule Restaurant.OrderCooked do
+    @enforce_keys [:message, :context]
+    defstruct [:message, :context]
+end
+defmodule Restaurant.OrderPriced do
+    @enforce_keys [:message, :context]
+    defstruct [:message, :context]
+end
+defmodule Restaurant.OrderPayed do
+    @enforce_keys [:message, :context]
+    defstruct [:message, :context]
 end
 
-# Events
-defmodule Restaurant.FoodOrdered do end
-defmodule Restaurant.OrderCooked do end
-defmodule Restaurant.OrderPriced do end
-defmodule Restaurant.OrderPayed do end
-
 # Commands
-defmodule Restaurant.CookOrder do end
-defmodule Restaurant.PriceOrder do end
-defmodule Restaurant.TakePayment do end
+defmodule Restaurant.CookOrder do
+    @enforce_keys [:message, :context]
+    defstruct [:message, :context]
+end
+defmodule Restaurant.PriceOrder do
+    @enforce_keys [:message, :context]
+    defstruct [:message, :context]
+end
+defmodule Restaurant.TakePayment do
+    @enforce_keys [:message, :context]
+    defstruct [:message, :context]
+end
