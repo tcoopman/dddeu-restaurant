@@ -37,3 +37,14 @@ end
 defmodule Restaurant.Message.Item do
     defstruct [:name, :quantity, :price]
 end
+
+# Events
+defmodule Restaurant.FoodOrdered do end
+defmodule Restaurant.OrderCooked do end
+defmodule Restaurant.OrderPriced do end
+defmodule Restaurant.OrderPayed do end
+
+# Commands
+defmodule Restaurant.CookOrder do end
+defmodule Restaurant.PriceOrder do end
+defmodule Restaurant.TakePayment do end

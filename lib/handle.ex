@@ -1,3 +1,6 @@
+alias Restaurant.OrderPayed
+alias Restaurant.Message
+
 defmodule Restaurant.PubSub do
     use GenServer
 
@@ -43,7 +46,6 @@ end
 defmodule Restaurant.Printer do
     use GenServer
 
-    alias Restaurant.Message
 
     def start_link() do
         GenServer.start_link(__MODULE__, nil)
@@ -59,9 +61,6 @@ end
 defmodule Restaurant.Threaded do
     use GenServer
     
-    alias Restaurant.Message
-
-
     def start_link(handler) do
         GenServer.start_link(__MODULE__, handler)
     end
@@ -80,7 +79,7 @@ defmodule Restaurant.Threaded do
         schedule_work(pid)
     end
 
-    def handle_call(message = %Message{correlation_id: correlation_id}, _from, state = %{message_queue: message_queue}) do
+    def handle_call(message = %Message{}, _from, state = %{message_queue: message_queue}) do
         Agent.update(message_queue, fn %{message_count: message_count, messages: messages} ->
             %{messages: :queue.in(message, messages), message_count: message_count + 1}
         end)
@@ -95,10 +94,10 @@ defmodule Restaurant.Threaded do
     def handle_info(:start, state = %{handler: handler, message_queue: message_queue}) do
         pid = self()
         spawn(fn ->
-            queueOut = Agent.get(message_queue, fn %{messages: messages} ->
+            queue_out = Agent.get(message_queue, fn %{messages: messages} ->
                 :queue.out(messages) 
             end)
-            case queueOut do
+            case queue_out do
                 {{:value, message}, new_queue} -> 
                     GenServer.call(handler, message)
                     Agent.update(message_queue, fn %{message_count: message_count} ->
@@ -119,8 +118,6 @@ end
 defmodule Restaurant.TimeToLive do
     use GenServer
 
-    alias Restaurant.Message
-
     def start_link(handler, ttl) do
         GenServer.start_link(__MODULE__, %{handler: handler, ttl: ttl})
     end
@@ -130,7 +127,7 @@ defmodule Restaurant.TimeToLive do
 
         case NaiveDateTime.compare(now, NaiveDateTime.add(created_on, ttl, :millisecond)) do
             :lt ->
-                GenServer.call(handler, message, 10000)
+                GenServer.call(handler, message, 10_000)
             _ ->
                 IO.puts "dropping message"
         end
@@ -140,8 +137,6 @@ end
 
 defmodule Restaurant.FairRoundRobin do
     use GenServer
-
-    alias Restaurant.Message
 
     def start_link(handlers) do
         GenServer.start_link(__MODULE__, handlers)
@@ -158,17 +153,17 @@ defmodule Restaurant.FairRoundRobin do
     end
 
     def handle_info(:fill, state = %{handlers: handlers, messages: messages}) do
-        maybeHandler = handlers
+        maybe_handler = handlers
         |> Enum.find(fn handlerPid -> 
             Restaurant.Threaded.message_count(handlerPid) < 5
         end)
 
-        new_state = if maybeHandler == nil do
+        new_state = if maybe_handler == nil do
             state
         else
             case messages do
                 [message | tail] ->
-                    GenServer.call(maybeHandler, message)
+                    GenServer.call(maybe_handler, message)
                     %{handlers: handlers, messages: tail}
                 _ -> state
             end
@@ -185,8 +180,6 @@ end
 
 defmodule Restaurant.RoundRobin do
     use GenServer
-
-    alias Restaurant.Message
 
     def start_link(handlers) do
         queue = :queue.from_list(handlers)
@@ -206,7 +199,7 @@ end
 defmodule Restaurant.Waiter do
     use GenServer
 
-    alias Restaurant.Message
+    alias Restaurant.FoodOrdered
 
     def start_link() do
         GenServer.start_link(__MODULE__, nil)
@@ -219,7 +212,7 @@ defmodule Restaurant.Waiter do
     def handle_call(table_number, _from, state) do
         IO.puts "Waiter is working"
         new_order = place_order(table_number)
-        Restaurant.PubSub.publish(:order_placed, new_order)
+        Restaurant.PubSub.publish(FoodOrdered, new_order)
         {:reply, nil, state}
     end
 
@@ -232,7 +225,7 @@ end
 defmodule Restaurant.Cook do
     use GenServer
 
-    alias Restaurant.Message
+    alias Restaurant.OrderCooked
 
     def start_link(cook_name) do
         state = %{cook_name: cook_name}
@@ -242,7 +235,7 @@ defmodule Restaurant.Cook do
     def handle_call(message = %Message{}, _from, state = %{cook_name: cook_name}) do
         IO.puts "#{cook_name} is cooking"
         new_order = cook(message)
-        Restaurant.PubSub.publish(:order_cooked, new_order)
+        Restaurant.PubSub.publish(OrderCooked, new_order)
         {:reply, nil, state}
     end
 
@@ -255,7 +248,7 @@ end
 defmodule Restaurant.Assistant do
     use GenServer
 
-    alias Restaurant.Message
+    alias Restaurant.OrderPriced
 
     def start_link() do
         GenServer.start_link(__MODULE__, nil)
@@ -264,7 +257,7 @@ defmodule Restaurant.Assistant do
     def handle_call(message = %Message{}, _from, state) do
         IO.puts "Assistant is working"
         new_order = priceMessage(message)
-        Restaurant.PubSub.publish(:order_calculated, new_order)
+        Restaurant.PubSub.publish(OrderPriced, new_order)
         {:reply, nil, state}
     end
 
@@ -281,8 +274,6 @@ end
 defmodule Restaurant.Cashier do
     use GenServer
 
-    alias Restaurant.Message
-
     def start_link() do
         GenServer.start_link(__MODULE__, nil)
     end
@@ -290,7 +281,7 @@ defmodule Restaurant.Cashier do
     def handle_call(message = %Message{}, _from, state) do
         IO.puts "Cashier is working"
         new_order = priceMessage(message)
-        Restaurant.PubSub.publish(:order_paid, new_order)
+        Restaurant.PubSub.publish(OrderPayed, new_order)
         {:reply, nil, state}
     end
 
