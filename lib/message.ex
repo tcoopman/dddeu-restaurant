@@ -11,7 +11,7 @@ defmodule Restaurant.Order do
 end
 
 defmodule Restaurant.Message.Context do
-    alias Restaurant.Message.Context
+    alias __MODULE__
 
     @enforce_keys [:id, :correlation_id, :causation_id, :created_on]
     defstruct [:id, :correlation_id, :causation_id, :created_on]
